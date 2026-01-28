@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 import numpy as np
 import cv2
 import os
+import base64
 from ultralytics import YOLO
 
 # ---------------- APP INIT ----------------
@@ -29,10 +30,7 @@ RISK_THRESHOLD = 15
 # ---------------- ROOT ----------------
 @app.get("/")
 def root():
-    return {
-        "status": "API running",
-        "model": "YOLOv8"
-    }
+    return {"status": "API running", "model": "YOLOv8"}
 
 # ---------------- DETECT ----------------
 @app.post("/detect")
@@ -43,11 +41,9 @@ async def detect_microplastics(file: UploadFile = File(...)):
         img = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
 
         if img is None:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Invalid image"}
-            )
+            return JSONResponse(status_code=400, content={"error": "Invalid image"})
 
+        # -------- YOLO INFERENCE --------
         results = model(img)
         boxes = results[0].boxes
         total_count = len(boxes)
@@ -63,15 +59,12 @@ async def detect_microplastics(file: UploadFile = File(...)):
 
             width_nm = width_px * PIXEL_TO_NM
             height_nm = height_px * PIXEL_TO_NM
-
             size_nm = (width_nm * height_nm) ** 0.5
+
             sizes_nm.append(size_nm)
+            box_list.append({"width": width_px, "height": height_px})
 
-            box_list.append({
-                "width": width_px,
-                "height": height_px
-            })
-
+        # -------- RISK LOGIC (UNCHANGED) --------
         if sizes_nm:
             min_size = min(sizes_nm)
             max_size = max(sizes_nm)
@@ -92,18 +85,22 @@ async def detect_microplastics(file: UploadFile = File(...)):
             risk_score = 0
             status = "SAFE"
 
+        # -------- NEW PART: ANNOTATED IMAGE --------
+        annotated_img = results[0].plot()
+        _, buffer = cv2.imencode(".jpg", annotated_img)
+        encoded_image = base64.b64encode(buffer).decode("utf-8")
+
+        # -------- RESPONSE --------
         return {
-            "total_count": total_count,      # ✅ STREAMLIT EXPECTS THIS
-            "boxes": box_list,               # ✅ REQUIRED FOR SIZE LOGIC
+            "total_count": total_count,
+            "boxes": box_list,
             "min_size_nm": round(min_size, 2),
             "avg_size_nm": round(avg_size, 2),
             "max_size_nm": round(max_size, 2),
             "risk_score": risk_score,
-            "status": status
+            "status": status,
+            "annotated_image": encoded_image  # ✅ added
         }
 
     except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e)}
-        )
+        return JSONResponse(status_code=500, content={"error": str(e)})
